@@ -1,0 +1,41 @@
+#FROM balenalib/raspberrypi5-ubuntu:jammy
+FROM balenalib/raspberrypi5-debian:bookworm
+
+WORKDIR /usr/src/app
+
+ARG MACHINE_NAME=%%BALENA_MACHINE_NAME%%
+ARG MACHINE_ARCH=%%BALENA_ARCH%%
+
+RUN apt-get update -y && \
+    apt-get install curl gnupg apt-transport-https \
+    debian-keyring debian-archive-keyring software-properties-common -y
+
+RUN if grep -q "Ubuntu 22.04" /etc/os-release; then \
+        add-apt-repository ppa:rabbitmq/rabbitmq-erlang ; \
+    fi
+
+RUN curl -1sLf \
+  'https://dl.cloudsmith.io/public/rabbitmq/rabbitmq-erlang/setup.deb.sh' \
+  | sudo -E bash
+
+RUN curl -1sLf \
+  'https://dl.cloudsmith.io/public/rabbitmq/rabbitmq-server/setup.deb.sh' \
+  | sudo -E bash
+
+RUN apt-get install -y erlang-base \
+    erlang-asn1 erlang-crypto erlang-eldap erlang-ftp erlang-inets \
+    erlang-mnesia erlang-os-mon erlang-parsetools erlang-public-key \
+    erlang-runtime-tools erlang-snmp erlang-ssl \
+    erlang-syntax-tools erlang-tftp erlang-tools erlang-xmerl
+
+# Detect OS and run appropriate commands
+RUN if grep -q "Ubuntu 22.04" /etc/os-release; then \
+        apt-get install -y rabbitmq-server --fix-missing; \
+    elif grep -q "Debian GNU/Linux 12 (bookworm)" /etc/os-release; then \
+        VERSION=$(apt-cache madison rabbitmq-server | awk '$3 < "3.13" {print $3; exit}') && \
+        apt-get install -y rabbitmq-server=$VERSION --fix-missing; \
+    else \
+        echo "Unsupported OS" && exit 1; \
+    fi
+
+
