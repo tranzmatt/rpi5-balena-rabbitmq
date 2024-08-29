@@ -38,4 +38,15 @@ RUN if grep -q "Ubuntu 22.04" /etc/os-release; then \
         echo "Unsupported OS" && exit 1; \
     fi
 
+# Copy RabbitMQ configuration files (adjust according to your cluster setup)
+COPY rabbitmq.conf /etc/rabbitmq/rabbitmq.conf
+COPY enabled_plugins /etc/rabbitmq/enabled_plugins
 
+# Expose necessary RabbitMQ ports
+EXPOSE 5672 15672 25672
+
+# Set the RABBITMQ_NODENAME dynamically based on the hostname
+ENV RABBITMQ_NODENAME=rabbit@$(hostname)
+
+# Start RabbitMQ server with the dynamic nodename
+CMD ["sh", "-c", "RABBITMQ_NODENAME=rabbit@$(hostname) RABBITMQ_ERLANG_COOKIE=${RABBITMQ_ERLANG_COOKIE} rabbitmq-server"]
