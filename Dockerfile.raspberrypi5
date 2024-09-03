@@ -7,7 +7,7 @@ ARG MACHINE_NAME=%%BALENA_MACHINE_NAME%%
 ARG MACHINE_ARCH=%%BALENA_ARCH%%
 
 RUN apt-get update -y && \
-    apt-get install curl gnupg apt-transport-https \
+    apt-get install curl gnupg apt-transport-https ipcalc \
     debian-keyring debian-archive-keyring software-properties-common -y
 
 RUN if grep -q "Ubuntu 22.04" /etc/os-release; then \
@@ -45,8 +45,8 @@ COPY enabled_plugins /etc/rabbitmq/enabled_plugins
 # Expose necessary RabbitMQ ports
 EXPOSE 5672 15672 25672
 
-# Set the RABBITMQ_NODENAME dynamically based on the hostname
-ENV RABBITMQ_NODENAME=rabbit@$(hostname)
+# Use an entrypoint script to properly set environment variables and start RabbitMQ server
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Start RabbitMQ server with the dynamic nodename
-CMD ["sh", "-c", "RABBITMQ_NODENAME=rabbit@$(hostname) RABBITMQ_ERLANG_COOKIE=${RABBITMQ_ERLANG_COOKIE} rabbitmq-server"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
