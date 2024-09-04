@@ -1,4 +1,4 @@
-#FROM balenalib/raspberrypi5-ubuntu:jammy
+# Use the Balena Debian base image for Raspberry Pi 5
 FROM balenalib/raspberrypi5-debian:bookworm
 
 WORKDIR /usr/src/app
@@ -6,29 +6,37 @@ WORKDIR /usr/src/app
 ARG MACHINE_NAME=%%BALENA_MACHINE_NAME%%
 ARG MACHINE_ARCH=%%BALENA_ARCH%%
 
+# Install required packages and RabbitMQ
 RUN apt-get update -y && \
-    apt-get install curl gnupg apt-transport-https ipcalc \
-    debian-keyring debian-archive-keyring software-properties-common -y
+    apt-get install curl wget gnupg apt-transport-https ipcalc bind9-dnsutils nmap \
+    debian-keyring debian-archive-keyring software-properties-common \
+    avahi-daemon avahi-utils dbus telnet -y
 
-RUN if grep -q "Ubuntu 22.04" /etc/os-release; then \
-        add-apt-repository ppa:rabbitmq/rabbitmq-erlang ; \
-    fi
-
+# Add the RabbitMQ and Erlang repositories
 RUN curl -1sLf \
   'https://dl.cloudsmith.io/public/rabbitmq/rabbitmq-erlang/setup.deb.sh' \
-  | sudo -E bash
+  | bash
 
 RUN curl -1sLf \
   'https://dl.cloudsmith.io/public/rabbitmq/rabbitmq-server/setup.deb.sh' \
-  | sudo -E bash
+  | bash
 
-RUN apt-get install -y erlang-base \
+RUN curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add -
+
+RUN wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor \
+  | tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+RUN echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
+  https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+  | tee /etc/apt/sources.list.d/hashicorp.list
+
+# Install Erlang and RabbitMQ
+RUN apt-get update -y && apt-get install -y erlang-base \
     erlang-asn1 erlang-crypto erlang-eldap erlang-ftp erlang-inets \
     erlang-mnesia erlang-os-mon erlang-parsetools erlang-public-key \
     erlang-runtime-tools erlang-snmp erlang-ssl \
     erlang-syntax-tools erlang-tftp erlang-tools erlang-xmerl
 
-# Detect OS and run appropriate commands
 RUN if grep -q "Ubuntu 22.04" /etc/os-release; then \
         apt-get install -y rabbitmq-server --fix-missing; \
     elif grep -q "Debian GNU/Linux 12 (bookworm)" /etc/os-release; then \
@@ -38,14 +46,26 @@ RUN if grep -q "Ubuntu 22.04" /etc/os-release; then \
         echo "Unsupported OS" && exit 1; \
     fi
 
+RUN apt-get install consul -y
+
 # Copy RabbitMQ configuration files (adjust according to your cluster setup)
 COPY rabbitmq.conf /etc/rabbitmq/rabbitmq.conf
 COPY enabled_plugins /etc/rabbitmq/enabled_plugins
+COPY avahi-daemon.conf /etc/avahi/avahi-daemon.conf
+COPY rabbitmq.service /etc/avahi/services/rabbitmq.service
+COPY nsswitch.conf /etc/nsswitch.conf
+COPY rabbitmq-consul.json /etc/consul.d/rabbitmq.json
 
 # Expose necessary RabbitMQ ports
 EXPOSE 5672 15672 25672
 
-# Use an entrypoint script to properly set environment variables and start RabbitMQ server
+# Expose consul ports
+EXPOSE 8300 8301 8302 8500
+
+# Expose avahi ports
+EXPOSE 5353 3689
+
+# Copy and use an entrypoint script to properly set environment variables and start RabbitMQ server
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

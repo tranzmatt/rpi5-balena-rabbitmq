@@ -1,0 +1,16 @@
+{
+  "service": {
+    "name": "rabbitmq",
+    "tags": [
+      "amqp"
+    ],
+    "port": 5672,
+    "check": {
+      "id": "rabbitmq-port-check",
+      "name": "RabbitMQ TCP on port 5672",
+      "tcp": "localhost:5672",
+      "interval": "10s",
+      "timeout": "1s"
+    }
+  }
+}

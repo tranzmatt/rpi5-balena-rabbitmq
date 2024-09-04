@@ -1,7 +1,87 @@
 #!/bin/bash
 
 # Set the RabbitMQ node name based on the device's hostname
-export RABBITMQ_NODENAME="rabbit@$(hostname)"
+export HOSTNAME_FULL=$(hostname -f 2>/dev/null || hostname)
+export RABBITMQ_NODENAME="rabbit@$HOSTNAME_FULL"
+
+# Set Consul configuration
+export CONSUL_NODE_NAME="${BALENA_DEVICE_NAME_AT_INIT}"
+export CONSUL_BIND_INTERFACE=$(ip route | grep default | awk '{print $5}')
+export CONSUL_BIND_ADDRESS=$(ip -4 addr show $CONSUL_BIND_INTERFACE | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+
+sed -i "s/host-name=HOSTNAME_FULL/host-name=${HOSTNAME_FULL}/" /etc/avahi/avahi-daemon.conf
+
+# Start D-Bus daemon (required for Avahi)
+dbus-daemon --system
+
+# Start the Avahi daemon
+avahi-daemon --no-chroot -D
+
+sleep 10
+
+retry_join_args=""
+
+# Create and advertise mDNS entries for RabbitMQ nodes
+rabbitmq_nodes=$(avahi-browse -r -t _amqp._tcp | awk '/^=/{getline; hostname=$3; getline; ip=$3; print ip, hostname}' | tr -d '[]')
+
+while read -r line; do
+    #printf "line %s\n" $line
+    ip=$(echo $line | awk '{print $1}')
+    hostname=$(echo $line | awk '{print $2}')
+
+    #echo "Checking IP $ip Hostname $hostname"
+
+    retry_join_args="$retry_join_args -retry-join=$ip"
+    #echo "current retry = $retry_join_args"
+
+    # Create an mDNS service file for RabbitMQ (port 5672 for AMQP)
+    cat <<EOL > /etc/avahi/services/${hostname}_amqp.service
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+
+<service-group>
+  <name replace-wildcards="yes">$hostname RabbitMQ</name>
+  <service>
+    <type>_amqp._tcp</type>
+    <port>5672</port>
+    <host-name>$hostname.local</host-name>
+    <address>$ip</address>
+  </service>
+</service-group>
+EOL
+
+    # Optionally, create an mDNS service file for the RabbitMQ management interface (port 15672)
+    cat <<EOL > /etc/avahi/services/${hostname}_mgmt.service
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+
+<service-group>
+  <name replace-wildcards="yes">$hostname RabbitMQ Management</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>15672</port>
+    <host-name>$hostname.local</host-name>
+    <address>$ip</address>
+  </service>
+</service-group>
+EOL
+
+    echo "this is retry = $retry_join_args"
+
+done <<< $rabbitmq_nodes
+
+#echo "final retry = $retry_join_args"
+
+# Start Consul agent
+consul agent -server -bind=$CONSUL_BIND_ADDRESS -node=$CONSUL_NODE_NAME \
+    -client=0.0.0.0 -bootstrap-expect=3 $retry_join_args \
+    -data-dir=/tmp/consul -ui \
+    > /var/log/consul.log 2>&1 &
+
+# Give Consul a few seconds to start and join the cluster
+sleep 10
+
+consul services register -name=rabbitmq
 
 # Write the Erlang cookie to the .erlang.cookie file
 echo $RABBITMQ_ERLANG_COOKIE > /var/lib/rabbitmq/.erlang.cookie
@@ -13,67 +93,11 @@ rabbitmq-server -detached
 
 sleep 10
 
-# Determine the network interface used by the default gateway
-DEFAULT_IFACE=$(ip route | grep default | awk '{print $5}')
+# Register RabbitMQ with Consul and start the RabbitMQ app
+rabbitmqctl start_app
 
-# Get the IP address and subnet mask of the network interface used by the default gateway
-DEFAULT_IFACE=$(ip route | grep default | awk '{print $5}')
-IP_ADDRESS=$(ip -4 addr show "$DEFAULT_IFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-SUBNET_MASK=$(ip -4 addr show "$DEFAULT_IFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | cut -d'/' -f2)
-
-printf "IP: %s\n" $IP_ADDRESS
-printf "MASK: %s\n" $SUBNET_MASK
-
-# Convert CIDR subnet mask to dotted decimal format
-CIDR_TO_DECIMAL() {
-  local i mask=""
-  for ((i=0; i<4; i++)); do
-    [ $SUBNET_MASK -ge 8 ] && { mask+=255; SUBNET_MASK=$((SUBNET_MASK-8)); } || { mask+=$((256-2**(8-SUBNET_MASK))); SUBNET_MASK=0; }
-    [ $i -lt 3 ] && mask+=.
-  done
-  echo $mask
-}
-
-DECIMAL_MASK=$(CIDR_TO_DECIMAL)
-
-printf "Dotted Decimal Mask: %s\n" $DECIMAL_MASK
-
-# Calculate the network address and broadcast address based on the IP and subnet mask
-IFS=. read -r i1 i2 i3 i4 <<<"$IP_ADDRESS"
-IFS=. read -r m1 m2 m3 m4 <<<"$DECIMAL_MASK"
-
-NETWORK_ADDRESS=$(printf "%d.%d.%d.%d" $((i1 & m1)) $((i2 & m2)) $((i3 & m3)) $((i4 & m4)))
-BROADCAST_ADDRESS=$(printf "%d.%d.%d.%d" $((i1 | ~m1 & 255)) $((i2 | ~m2 & 255)) $((i3 | ~m3 & 255)) $((i4 | ~m4 & 255)))
-
-printf "Network Address: %s\n" $NETWORK_ADDRESS
-printf "Broadcast Address: %s\n" $BROADCAST_ADDRESS
-
-# Convert IPs to start and end range
-IFS=. read -r b1 b2 b3 b4 <<<"$BROADCAST_ADDRESS"
-IFS=. read -r n1 n2 n3 n4 <<<"$NETWORK_ADDRESS"
-
-## Attempt to join any node within the calculated subnet range
-for i1 in $(seq $n1 $b1); do
-  for i2 in $(seq $n2 $b2); do
-    for i3 in $(seq $n3 $b3); do
-      for i4 in $(seq $((n4+1)) $((b4-1))); do
-        TARGET="$i1.$i2.$i3.$i4"
-        if [ "$TARGET" != "$IP_ADDRESS" ]; then
-          rabbitmqctl stop_app
-	  echo "${RABBITMQ_NODENAME} is joining rabbit@${TARGET}"
-          rabbitmqctl join_cluster "rabbit@$TARGET" 2>/dev/null && break 4
-          rabbitmqctl start_app
-        fi
-      done
-    done
-  done
-done
-
-# Bring RabbitMQ server to the foreground
-#rabbitmqctl await_startup
-
-while true; do sleep 10000; done
-
+# Tail both RabbitMQ and Consul logs for easier debugging
+tail -f /var/log/rabbitmq/${RABBITMQ_NODENAME}.log /var/log/consul.log
 
 # Keep the container running
-tail -f /var/log/rabbitmq/*
+while true; do sleep 100 ; done
