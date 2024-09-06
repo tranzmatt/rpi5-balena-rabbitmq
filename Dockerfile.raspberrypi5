@@ -8,9 +8,20 @@ ARG MACHINE_ARCH=%%BALENA_ARCH%%
 
 # Install required packages and RabbitMQ
 RUN apt-get update -y && \
-    apt-get install curl wget gnupg apt-transport-https ipcalc bind9-dnsutils nmap \
+    apt-get install -y curl wget gnupg apt-transport-https ipcalc bind9-dnsutils nmap \
     debian-keyring debian-archive-keyring software-properties-common \
-    avahi-daemon avahi-utils dbus telnet -y
+    avahi-daemon avahi-utils dbus telnet systemd libnss-mdns vim
+
+RUN systemctl mask \
+    dev-hugepages.mount \
+    sys-fs-fuse-connections.mount \
+    sys-kernel-config.mount \
+    display-manager.service \
+    getty@.service \
+    systemd-logind.service \
+    systemd-remount-fs.service \
+    getty.target \
+    graphical.target
 
 # Add the RabbitMQ and Erlang repositories
 RUN curl -1sLf \
@@ -56,14 +67,16 @@ COPY rabbitmq.service /etc/avahi/services/rabbitmq.service
 COPY nsswitch.conf /etc/nsswitch.conf
 COPY rabbitmq-consul.json /etc/consul.d/rabbitmq.json
 
-# Expose necessary RabbitMQ ports
-EXPOSE 5672 15672 25672
+RUN rabbitmq-plugins enable --offline rabbitmq_peer_discovery_consul
+
+# Expose avahi ports
+EXPOSE 5353 3689
 
 # Expose consul ports
 EXPOSE 8300 8301 8302 8500
 
-# Expose avahi ports
-EXPOSE 5353 3689
+# Expose necessary RabbitMQ ports
+EXPOSE 4369 5672 6000-6500 15672 25672 35672-35682
 
 # Copy and use an entrypoint script to properly set environment variables and start RabbitMQ server
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
