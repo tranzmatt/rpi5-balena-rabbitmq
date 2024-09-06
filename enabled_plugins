@@ -1,1 +1,2 @@
-[rabbitmq_management, rabbitmq_peer_discovery_classic_config].
+[rabbitmq_management, rabbitmq_peer_discovery_consul].
+
