@@ -1,5 +1,6 @@
 # Use the Balena Debian base image for Raspberry Pi 5
-FROM balenalib/raspberrypi5-debian:bookworm
+#FROM balenalib/raspberrypi5-debian:bookworm
+FROM balenalib/raspberrypi5-ubuntu:jammy
 
 WORKDIR /usr/src/app
 
@@ -41,16 +42,11 @@ RUN echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
   https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
   | tee /etc/apt/sources.list.d/hashicorp.list
 
-# Install Erlang and RabbitMQ
-RUN apt-get update -y && apt-get install -y erlang-base \
-    erlang-asn1 erlang-crypto erlang-eldap erlang-ftp erlang-inets \
-    erlang-mnesia erlang-os-mon erlang-parsetools erlang-public-key \
-    erlang-runtime-tools erlang-snmp erlang-ssl \
-    erlang-syntax-tools erlang-tftp erlang-tools erlang-xmerl
-
 RUN if grep -q "Ubuntu 22.04" /etc/os-release; then \
+        add-apt-repository ppa:rabbitmq/rabbitmq-erlang ; \
         apt-get install -y rabbitmq-server --fix-missing; \
     elif grep -q "Debian GNU/Linux 12 (bookworm)" /etc/os-release; then \
+        apt-get update ; \
         VERSION=$(apt-cache madison rabbitmq-server | awk '$3 < "3.13" {print $3; exit}') && \
         apt-get install -y rabbitmq-server=$VERSION --fix-missing; \
     else \

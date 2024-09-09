@@ -20,6 +20,7 @@ if ! grep -q "search ${DOMAIN_NAME}" /etc/resolv.conf; then
 fi
 
 # Start D-Bus daemon (required for Avahi)
+mkdir -p /run/dbus
 dbus-daemon --system
 
 # Start the Avahi daemon
