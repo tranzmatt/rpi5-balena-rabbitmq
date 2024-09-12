@@ -1,5 +1,7 @@
 #!/bin/bash
 
+echo ">>>>>>>>>>>>>>>>>>>>>>>>>>"
+
 # Check if the RABBITMQ_NODENAME environment variable is set, otherwise set a default
 if [ -z "$RABBITMQ_NODENAME" ]; then
   export RABBITMQ_NODENAME="rabbit@$(hostname -s)"
@@ -21,6 +23,7 @@ fi
 
 # Start D-Bus daemon (required for Avahi)
 mkdir -p /run/dbus
+/bin/rm -f /run/dbus/pid || true
 dbus-daemon --system
 
 # Start the Avahi daemon
@@ -57,6 +60,7 @@ done
 CONSUL_LEADER_URL="http://localhost:8500/v1/status/leader"
 LEADER_IP=""
 DOMAIN=""
+I_AM_LEADER=0
 
 echo "Waiting for Consul leader to be elected..."
 
@@ -78,6 +82,11 @@ until [ -n "$LEADER_IP" ]; do
       SHORT_HOSTNAME=$(echo $FULL_HOSTNAME | cut -d'.' -f1)
       DOMAIN=$(echo $FULL_HOSTNAME | cut -d'.' -f2-)
 
+      if [ $CONSUL_NODE_NAME == $SHORT_HOSTNAME ]; then
+        I_AM_LEADER=1
+        echo "I AM THE LEADER"
+      fi
+
       #echo "The domain for the Consul leader IP address $LEADER_IP is $DOMAIN"
       echo "cluster_formation.consul.host = $SHORT_HOSTNAME" >> /etc/rabbitmq/rabbitmq.conf
     else
@@ -97,11 +106,40 @@ echo $RABBITMQ_ERLANG_COOKIE > /var/lib/rabbitmq/.erlang.cookie
 chmod 400 /var/lib/rabbitmq/.erlang.cookie
 chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie
 
+rabbitmq-plugins enable --offline rabbitmq_peer_discovery_consul
+rabbitmq-plugins enable --offline rabbitmq_mqtt
+rabbitmq-plugins enable --offline rabbitmq_web_mqtt
+rabbitmq-plugins enable --offline rabbitmq_web_mqtt_examples
+rabbitmqctl set_policy ha-all "^" '{"ha-mode":"all"}'
+
+
 # Start the RabbitMQ server
 echo "Starting RabbitMQ server..."
 
 # This should be run in detached mode and will be once there's more to do
-exec rabbitmq-server
+exec rabbitmq-server -detached &
+
+echo "<<<<<<<<<<<<<<<<<<<<<"
+
+# Wait for RabbitMQ to spin up
+RABBITMQ_AMQP_PORT=5672
+RABBITMQ_HOST="localhost"
+
+echo "Waiting for RabbitMQ to be ready on $RABBITMQ_HOST:$RABBITMQ_AMQP_PORT..."
+while ! nc -z $RABBITMQ_HOST $RABBITMQ_AMQP_PORT; do
+  echo "RabbitMQ is not ready yet, sleeping..."
+  sleep 2
+done
+echo "RabbitMQ is up and running on $RABBITMQ_HOST:$RABBITMQ_AMQP_PORT."
+
+# Output the result
+if [ $I_AM_LEADER -eq 1 ]; then
+    echo "This node is the Consul leader. Running producer."
+    python3 mqtt_producer.py
+else
+    echo "This node is not the Consul leader. Running consumer."
+    python3 mqtt_consumer.py
+fi
 
 # Keep the container running
 while true; do sleep 100 ; done
